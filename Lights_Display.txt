@@ -1,0 +1,178 @@
+#include <Adafruit_NeoPixel.h>
+#include <PDM.h>
+
+#define PIN 4  // Pin connected to the LED matrix
+#define NUM_PIXELS 64  // Total number of pixels in the 8x8 matrix
+#define MATRIX_SIZE 8  // 8x8 matrix size
+#define SAMPLE_RATE 16000  // Audio sample rate
+#define AMPLITUDE_THRESHOLD 30  // Minimum amplitude to trigger faster refresh rate
+
+Adafruit_NeoPixel matrix = Adafruit_NeoPixel(NUM_PIXELS, PIN, NEO_GRB + NEO_KHZ800);
+
+short sampleBuffer[512];  // Buffer to store audio samples
+volatile int samplesRead;
+int dimFactor = 40;  // Value between 0 and 255 to dim the colors (0 = off, 255 = full brightness)
+unsigned long previousMillis = 0;  // Store the last refresh time
+int refreshInterval = 3000;  // Default interval of 3 seconds
+int trackColor = 7; //Tracks the which color should column 0 have in void loop()
+
+struct Pixel {
+  uint32_t color;
+  int row;
+};
+
+Pixel colors[8]; //stores each column's pixel's row and color information
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial);
+
+  matrix.begin();  // Initialize the LED matrix
+  matrix.clear();  // Ensure all LEDs are turned off initially
+
+  // Initialize PDM (Pulse Density Modulation) for microphone input
+  PDM.onReceive(onPDMdata);
+  if (!PDM.begin(1, SAMPLE_RATE)) {  // 1 channel (mono) at 16kHz sample rate
+    Serial.println("Failed to start PDM!");
+    while (1);
+  }
+  // Loop through each column and light up a random pixel
+  for (int col = 0; col < MATRIX_SIZE; col++) {
+    // Generate a random row index for each column
+    int randomRow = random(0, MATRIX_SIZE);  // Random row between 0 and 7
+    // Set the color based on the column, and apply the dim factor
+    switch (col) {
+      case 0:
+        // Color for red is 255, 0, 0
+        colors[col] = {matrix.Color(dimFactor, 0, 0), randomRow};  // Red for column 1
+        break;
+      case 1:
+        // Color for orange is 255, 165, 0
+        colors[col] = {matrix.Color(dimFactor, (165 * dimFactor) / 255, 0), randomRow};  // Orange for column 2
+        break;
+      case 2:
+        // Color for yellow is 255, 255, 0
+        colors[col]= {matrix.Color(dimFactor, dimFactor, 0), randomRow};  // Yellow for column 3
+        break;
+      case 3:
+        // Color for green is 0, 255, 0
+        colors[col] = {matrix.Color(0, dimFactor, 0), randomRow};  // Green for column 4
+        break;
+      case 4:
+        // Color for blue is 0, 0, 255
+        colors[col] = {matrix.Color(0, 0, dimFactor), randomRow};  // Blue for column 5
+        break;
+      case 5:
+        // Color for indigo is 75, 0, 130
+        colors[col] = {matrix.Color((75 * dimFactor) / 255, 0, (130 * dimFactor) / 255), randomRow};  // Indigo for column 6
+        break;
+      case 6:
+        // Color for violet is 172, 59, 255
+        colors[col] = {matrix.Color((172 * dimFactor) / 255, (59 * dimFactor) / 255, (255 * dimFactor) / 255), randomRow};  // Violet for column 7
+        break;
+      case 7:
+        // Color for pink is 255, 105, 180
+        colors[col] = {matrix.Color(dimFactor, (105 * dimFactor) / 255, (180 * dimFactor) / 255), randomRow};  // Pink for column 8
+        break;
+    }
+    // Light up the pixel in the random row for the current column
+    matrix.setPixelColor(randomRow * MATRIX_SIZE + col, colors[col].color); // Map row and column to pixel index
+  }
+  matrix.show(); // Show matrix LED colorings
+}
+
+void loop() {
+  // Check the time since the last refresh
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= refreshInterval) {
+    previousMillis = currentMillis;
+    for(int col = MATRIX_SIZE - 1; col > 0; col--){
+      colors[col].color = colors[col - 1].color;
+      colors[col].row = colors[col - 1].row;
+      matrix.setPixelColor(colors[col].row * MATRIX_SIZE + col, colors[col].color);
+    }
+
+    colors[0].row = random(0, MATRIX_SIZE);
+    switch (trackColor) {
+      case 0:
+        colors[0].color = matrix.Color(dimFactor, 0, 0);  // Red for column 1
+        break;
+      case 1:
+        colors[0].color = matrix.Color(dimFactor, (165 * dimFactor) / 255, 0);  // Orange for column 2
+        break;
+      case 2:
+        colors[0].color = matrix.Color(dimFactor, dimFactor, 0);  // Yellow for column 3
+        break;
+      case 3:
+        colors[0].color = matrix.Color(0, dimFactor, 0);  // Green for column 4
+        break;
+      case 4:
+        colors[0].color = matrix.Color(0, 0, dimFactor);  // Blue for column 5
+        break;
+      case 5:
+        colors[0].color = matrix.Color((75 * dimFactor) / 255, 0, (130 * dimFactor) / 255);  // Indigo for column 6
+        break;
+      case 6:
+        colors[0].color = matrix.Color((238 * dimFactor) / 255, (130 * dimFactor) / 255, (238 * dimFactor) / 255);  // Violet for column 7
+        break;
+      case 7:
+        colors[0].color = matrix.Color((255 * dimFactor) / 255, (105 * dimFactor) / 255, (180 * dimFactor) / 255);  // Pink for column 8
+        break;
+    }
+    matrix.setPixelColor(colors[0].row * MATRIX_SIZE + 0, colors[0].color);
+    trackColor = (trackColor - 1 + 8) % 8;
+    // Update the matrix to display the changes
+    matrix.show();
+  }
+  // Adjust the refresh interval based on the audio input intensity
+  adjustRefreshRate();
+  matrix.clear();
+}
+
+/**
+ * Callback function to process the data from the PDM microphone.
+ * NOTE: This callback is executed as part of an ISR.
+ */
+void onPDMdata() {
+  // Query the number of available bytes
+  int bytesAvailable = PDM.available();
+
+  // Read into the sample buffer
+  PDM.read(sampleBuffer, bytesAvailable);
+
+  // 16-bit, 2 bytes per sample
+  samplesRead = bytesAvailable / 2;
+}
+
+/**
+ * Function to adjust the refresh rate based on the audio intensity.
+ */
+void adjustRefreshRate() {
+  int amplitude = 0;
+  
+  // Calculate the amplitude of the audio signal (simple peak detection)
+  for (int i = 0; i < samplesRead; i++) {
+    amplitude = max(amplitude, abs(sampleBuffer[i]));
+  }
+
+  // If the amplitude is below the threshold, use the default refresh interval (3 seconds)
+  if (amplitude < AMPLITUDE_THRESHOLD) {
+    refreshInterval = 3000;  // 3 seconds for quiet or no music
+  }
+  // If the amplitude exceeds the threshold, decrease the interval (faster updates)
+  else {
+    if (amplitude > 100) {
+      refreshInterval = 200;  // 0.2 seconds for very loud music
+      // Serial.println("loud");
+    } else if (amplitude > 70) {
+      refreshInterval = 500;  // 0.5 seconds for medium intensity
+      // Serial.println("medium");
+    } else if (amplitude > 50) {
+      refreshInterval = 1000;  // 1 second for moderate music
+      // Serial.println("moderate");
+    } else {
+      refreshInterval = 2000;  // Default 2 seconds for mild sound
+      // Serial.println("mild");
+    }
+  }
+}

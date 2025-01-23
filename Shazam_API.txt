@@ -1,0 +1,52 @@
+import serial
+import asyncio
+import wave
+import shazamio
+import time
+
+port = "COM3"
+baud = 2000000
+
+ser = serial.Serial(port, baud)
+print(f"Connected to {port} at {baud} baud")
+
+shazam = shazamio.Shazam()
+
+def get_wav(pcm_data, sample_rate=16000):
+    with wave.open("audio.wav", 'wb') as wav_file:
+        wav_file.setnchannels(1)  # Mono audio
+        wav_file.setsampwidth(2)  # 2 bytes per sample (16-bit audio)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_data)
+
+async def recognize_song(ser):
+    data_buffer = b""
+
+    while True:
+        if ser.in_waiting > 0:
+            chunk = ser.read(ser.in_waiting)
+            data_buffer += chunk
+            
+        if len(data_buffer) >= 159744:
+            get_wav(data_buffer)
+            result = await shazam.recognize("audio.wav")
+
+            if "track" not in result:
+                print("NOT FOUND")
+                continue
+            print(f"{result['track']['title']} - {result['track']['subtitle']}")
+
+            ser.write(f"{result['track']['title']} - {result['track']['subtitle']}\n".encode('utf-8'))
+            data_buffer = b""
+
+
+while True:
+    if ser.in_waiting > 0:
+        line = ser.readline().decode('utf-8').strip()
+
+        if line == "STATUS":
+            print("STATUS OK")
+            ser.write(b"OK\n")
+        elif line == "RECORD":
+            print("RECORD")
+            asyncio.run(recognize_song(ser))
